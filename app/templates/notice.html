@@ -43,12 +43,47 @@
   <pre class="body">{{ latest.body }}</pre>
 </div>
 
+{% if pending_diff %}
+<div class="card confirm-box">
+  <h2 style="margin-top:0">差异核对（最新版 r{{ latest.revision }} 待核）</h2>
+  <p class="meta">
+    {% if pending_diff.is_first %}
+      r{{ latest.revision }} 是首个存档版本，无前一版可比对；正文全部段落将列为“新增”，附件单独标明。
+    {% else %}
+      与前一存档版 r{{ pending_diff.old_revision }} 按自然段比对：
+    {% endif %}
+  </p>
+  <div class="summary-bar">
+    <span class="tag added">新增 {{ pending_diff.counts.added }} 段</span>
+    <span class="tag deleted">删除 {{ pending_diff.counts.deleted }} 段</span>
+    <span class="tag modified">修改 {{ pending_diff.counts.modified }} 段</span>
+    <span class="tag unchanged">相同 {{ pending_diff.counts.unchanged }} 段</span>
+    {% if pending_diff.attachment.changed %}
+      <span class="tag modified">附件指纹已变化</span>
+    {% else %}
+      <span class="tag unchanged">附件未变化</span>
+    {% endif %}
+  </div>
+  <p>
+    <a href="/notice/{{ number|urlencode }}/version/{{ latest.revision }}/diff">
+      打开差异核对页并确认 →
+    </a>
+  </p>
+</div>
+{% else %}
+<div class="card">
+  <h2 style="margin-top:0">差异核对</h2>
+  <p><span class="pill reviewed">最新版 r{{ latest.revision }} 已核对确认</span>
+    <a href="/notice/{{ number|urlencode }}/version/{{ latest.revision }}/diff">查看该版差异</a></p>
+</div>
+{% endif %}
+
 <h2>版本历史</h2>
 {% if versions|length > 1 or events %}
 <div class="card" style="padding:4px 10px">
 <table>
   <thead>
-    <tr><th>修订</th><th>采集时间</th><th>标题</th><th>附件</th><th>状态</th><th></th></tr>
+    <tr><th>修订</th><th>采集时间</th><th>标题</th><th>附件</th><th>状态</th><th>核对</th><th></th></tr>
   </thead>
   <tbody>
   {% for v in versions %}
@@ -60,12 +95,50 @@
       <td class="meta">{{ v.attachment_filename }} · {{ v.attachment_size|bytes }}</td>
       <td>{% if v.source_retracted %}<span class="pill retracted">采时源站已撤稿</span>
           {% else %}<span class="pill">已存档</span>{% endif %}</td>
-      <td><a href="/notice/{{ number|urlencode }}/version/{{ v.revision }}">查看</a></td>
+      <td>
+        {% set reviewed = reviews | selectattr("new_revision", "equalto", v.revision) | list %}
+        {% if reviewed %}
+          <span class="pill reviewed">已确认</span>
+        {% elif loop.first %}
+          <span class="pill pending">待核</span>
+        {% else %}
+          <span class="meta">—</span>
+        {% endif %}
+      </td>
+      <td>
+        <a href="/notice/{{ number|urlencode }}/version/{{ v.revision }}">查看</a>
+        · <a href="/notice/{{ number|urlencode }}/version/{{ v.revision }}/diff">差异</a>
+      </td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
+{% endif %}
+
+<h2>核对确认记录</h2>
+{% if reviews %}
+<div class="card" style="padding:4px 10px">
+<table>
+  <thead><tr><th>确认时间</th><th>核对人</th><th>版本对</th><th>差异指纹</th><th></th></tr></thead>
+  <tbody>
+  {% for r in reviews %}
+    <tr>
+      <td class="meta">{{ r.confirmed_at|ts }}</td>
+      <td>{{ r.reviewer }}</td>
+      <td>
+        {% if r.old_revision %}r{{ r.old_revision }} → r{{ r.new_revision }}
+        {% else %}首个版本 r{{ r.new_revision }}{% endif %}
+      </td>
+      <td><code>{{ r.diff_fingerprint[:16] }}…</code></td>
+      <td><a href="/notice/{{ number|urlencode }}/review/{{ r.id }}">查看记录</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+{% else %}
+<p class="empty">尚无核对确认记录；请打开最新版差异核对页完成确认。</p>
 {% endif %}
 
 <h2>核对记录</h2>
@@ -80,6 +153,7 @@
       <td>
         {% if e.outcome == "created" %}<span class="pill current">新建版本</span>
         {% elif e.outcome == "unchanged" %}<span class="pill">无变化</span>
+        {% elif e.outcome == "review_confirmed" %}<span class="pill reviewed">核对确认</span>
         {% elif e.outcome in ("conflict","revision_mismatch","source_inconsistent") %}
           <span class="pill conflict">{{ e.outcome }}</span>
         {% else %}<span class="pill retracted">{{ e.outcome }}</span>{% endif %}

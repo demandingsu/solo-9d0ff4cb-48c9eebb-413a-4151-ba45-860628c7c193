@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+{% block title %}{{ number }} 核对确认记录 · 公告档案{% endblock %}
+{% block content %}
+{% if confirmed %}<div class="banner">核对确认已写入：该记录绑定两个版本及当时的实际差异。</div>{% endif %}
+<p class="meta"><a href="/notice/{{ number|urlencode }}">← 返回公告 {{ number }}</a></p>
+<h1>核对确认记录 #{{ review.id }}</h1>
+
+<div class="card">
+  <h2 style="margin-top:0">确认信息</h2>
+  <dl class="kv">
+    <dt>公告号</dt><dd>{{ number }}</dd>
+    <dt>版本对</dt><dd>
+      {% if review.old_revision %}
+        r{{ review.old_revision }} → r{{ review.new_revision }}
+      {% else %}
+        首个存档版 r{{ review.new_revision }}（无前一版可比对）
+      {% endif %}
+    </dd>
+    <dt>核对人</dt><dd>{{ review.reviewer }}</dd>
+    <dt>确认时间</dt><dd>{{ review.confirmed_at|ts }}</dd>
+    <dt>差异指纹</dt><dd><code>{{ review.diff_fingerprint }}</code></dd>
+    <dt>正文指纹</dt>
+    <dd><code>{{ review.body_sha256_old or "—" }}</code> →
+        <code>{{ review.body_sha256_new }}</code></dd>
+    <dt>附件指纹</dt>
+    <dd><code>{{ review.attachment_sha256_old or "—" }}</code> →
+        <code>{{ review.attachment_sha256_new }}</code></dd>
+    <dt>原始版本</dt>
+    <dd>
+      {% if review.old_revision %}
+        <a href="/notice/{{ number|urlencode }}/version/{{ review.old_revision }}">查看 r{{ review.old_revision }}</a> ·
+      {% endif %}
+      <a href="/notice/{{ number|urlencode }}/version/{{ review.new_revision }}">查看 r{{ review.new_revision }}</a>
+    </dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">确认时的差异快照</h2>
+  <div class="summary-bar">
+    <span class="tag added">新增 {{ snapshot.counts.added }} 段</span>
+    <span class="tag deleted">删除 {{ snapshot.counts.deleted }} 段</span>
+    <span class="tag modified">修改 {{ snapshot.counts.modified }} 段</span>
+    <span class="tag unchanged">相同 {{ snapshot.counts.unchanged }} 段</span>
+  </div>
+  {% for p in paragraphs %}
+  <div class="diff-block {{ p.kind }}">
+    <h3>
+      {% if p.kind == "added" %}<span class="tag added">新增</span>
+      {% elif p.kind == "deleted" %}<span class="tag deleted">删除</span>
+      {% elif p.kind == "modified" %}<span class="tag modified">修改</span>
+      {% else %}<span class="tag unchanged">相同</span>{% endif %}
+      <span class="meta">
+        {% if p.old_index is not none %}旧版第 {{ p.old_index + 1 }} 段{% endif %}
+        {% if p.old_index is not none and p.new_index is not none %} → {% endif %}
+        {% if p.new_index is not none %}新版第 {{ p.new_index + 1 }} 段{% endif %}
+      </span>
+    </h3>
+    {% if p.kind == "deleted" %}
+      <p class="diff-text old">{{ p.old_text }}</p>
+    {% elif p.kind == "added" %}
+      <p class="diff-text new">{{ p.new_text }}</p>
+    {% elif p.kind == "modified" %}
+      <p class="diff-text old">{% for s in p.segments %}{% if s.kind == "equal" %}{{ s.text }}{% elif s.kind == "delete" %}<del>{{ s.text }}</del>{% endif %}{% endfor %}</p>
+      <p class="diff-text new">{% for s in p.segments %}{% if s.kind == "equal" %}{{ s.text }}{% elif s.kind == "insert" %}<ins>{{ s.text }}</ins>{% endif %}{% endfor %}</p>
+    {% else %}
+      <p class="diff-text">{{ p.new_text }}</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  <h2>附件核对快照</h2>
+  <p>
+    {% if snapshot.attachment.is_first %}
+      <span class="tag unchanged">首个版本</span>
+    {% elif snapshot.attachment.changed %}
+      <span class="tag modified">附件已变化</span>
+    {% else %}
+      <span class="tag unchanged">附件未变化</span>
+    {% endif %}
+  </p>
+  <ul class="meta">
+    {% for detail in snapshot.attachment.details %}<li>{{ detail }}</li>{% endfor %}
+  </ul>
+</div>
+{% endblock %}

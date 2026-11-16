@@ -1,0 +1,131 @@
+{% extends "base.html" %}
+{% block title %}{{ number }} r{{ diff.new_revision }} 差异核对 · 公告档案{% endblock %}
+{% block content %}
+<p class="meta"><a href="/notice/{{ number|urlencode }}">← 返回公告 {{ number }}</a></p>
+<h1>差异核对：
+  {% if diff.is_first %}首个存档版 r{{ diff.new_revision }}
+  {% else %}r{{ diff.old_revision }} → r{{ diff.new_revision }}{% endif %}
+</h1>
+<p class="meta">
+  前一存档版：
+  {% if previous %}<a href="/notice/{{ number|urlencode }}/version/{{ diff.old_revision }}">r{{ diff.old_revision }}</a>
+  {% else %}无（首个存档版本）{% endif %}
+  · 当前核对版：<a href="/notice/{{ number|urlencode }}/version/{{ diff.new_revision }}">r{{ diff.new_revision }}</a>
+  · 按自然段比对，完全相同的段落（含重复、换位）不计入增删
+</p>
+
+{% if review %}
+<div class="banner">
+  本版已于 {{ review.confirmed_at|ts }} 由 {{ review.reviewer }} 核对确认，
+  <a href="/notice/{{ number|urlencode }}/review/{{ review.id }}">查看确认记录</a>。
+</div>
+{% elif not is_latest %}
+<div class="banner warn">
+  r{{ diff.new_revision }} 不是最新存档版本。以下为当时的实际差异，可查阅但无需再确认；
+  最新版本的核对请返回公告页。
+</div>
+{% endif %}
+
+<div class="card">
+  <h2 style="margin-top:0">差异概览</h2>
+  <div class="summary-bar">
+    <span class="tag added">新增 {{ diff.counts.added }} 段</span>
+    <span class="tag deleted">删除 {{ diff.counts.deleted }} 段</span>
+    <span class="tag modified">修改 {{ diff.counts.modified }} 段</span>
+    <span class="tag unchanged">相同 {{ diff.counts.unchanged }} 段</span>
+  </div>
+  <dl class="kv">
+    <dt>标题</dt><dd>
+      {% if diff.title_changed %}
+        <span class="tag modified">已修改</span>
+        <del>{{ diff.old_title }}</del> → <ins>{{ diff.new_title }}</ins>
+      {% else %}{{ diff.new_title }}{% endif %}
+    </dd>
+    <dt>差异指纹</dt><dd><code>{{ diff.fingerprint }}</code>
+      <span class="meta">（确认记录将绑定该指纹，正文或附件变化会使指纹失效）</span></dd>
+  </dl>
+</div>
+
+<div class="card">
+  <h2 style="margin-top:0">附件指纹核对（单独标明）</h2>
+  {% if diff.attachment.is_first %}
+    <p class="meta">{{ diff.attachment.details|join("；") }}</p>
+  {% elif diff.attachment.changed %}
+    <p><span class="tag modified">附件已变化</span></p>
+    <table>
+      <thead><tr><th></th><th>前一版 r{{ diff.old_revision }}</th><th>当前版 r{{ diff.new_revision }}</th></tr></thead>
+      <tbody>
+        <tr><td class="meta">文件名</td>
+          <td>{{ diff.attachment.old_filename }}</td><td>{{ diff.attachment.new_filename }}</td></tr>
+        <tr><td class="meta">类型</td>
+          <td>{{ diff.attachment.old_content_type }}</td><td>{{ diff.attachment.new_content_type }}</td></tr>
+        <tr><td class="meta">大小</td>
+          <td>{{ diff.attachment.old_size|bytes }}</td><td>{{ diff.attachment.new_size|bytes }}</td></tr>
+        <tr><td class="meta">SHA-256</td>
+          <td><code>{{ diff.attachment.old_sha256 }}</code></td>
+          <td><code>{{ diff.attachment.new_sha256 }}</code></td></tr>
+      </tbody>
+    </table>
+  {% else %}
+    <p><span class="tag unchanged">附件未变化</span>
+      <span class="meta">{{ diff.attachment.details|join("；") }}</span></p>
+    <dl class="kv"><dt>SHA-256</dt><dd><code>{{ diff.attachment.new_sha256 }}</code></dd></dl>
+  {% endif %}
+  <p class="meta">
+    附件下载：
+    {% if previous %}<a href="/notice/{{ number|urlencode }}/version/{{ diff.old_revision }}/attachment">下载 r{{ diff.old_revision }} 附件</a> · {% endif %}
+    <a href="/notice/{{ number|urlencode }}/version/{{ diff.new_revision }}/attachment">下载 r{{ diff.new_revision }} 附件</a>
+  </p>
+</div>
+
+<h2>正文段落差异</h2>
+{% if paragraphs %}
+  {% for p in paragraphs %}
+  <div class="diff-block {{ p.kind }}">
+    <h3>
+      {% if p.kind == "added" %}<span class="tag added">新增</span>
+      {% elif p.kind == "deleted" %}<span class="tag deleted">删除</span>
+      {% elif p.kind == "modified" %}<span class="tag modified">修改</span>
+      {% else %}<span class="tag unchanged">相同</span>{% endif %}
+      <span class="meta">
+        {% if p.old_index is not none %}旧版第 {{ p.old_index + 1 }} 段{% endif %}
+        {% if p.old_index is not none and p.new_index is not none %} → {% endif %}
+        {% if p.new_index is not none %}新版第 {{ p.new_index + 1 }} 段{% endif %}
+      </span>
+    </h3>
+    {% if p.kind == "modified" %}
+      <p class="diff-text old">{% for s in p.segments %}{% if s.kind == "equal" %}{{ s.text }}{% elif s.kind == "delete" %}<del>{{ s.text }}</del>{% endif %}{% endfor %}</p>
+      <p class="diff-text new">{% for s in p.segments %}{% if s.kind == "equal" %}{{ s.text }}{% elif s.kind == "insert" %}<ins>{{ s.text }}</ins>{% endif %}{% endfor %}</p>
+    {% elif p.kind == "deleted" %}
+      <p class="diff-text old">{{ p.old_text }}</p>
+    {% else %}
+      <p class="diff-text">{{ p.new_text }}</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+{% else %}
+  <p class="empty">两个版本均无正文段落。</p>
+{% endif %}
+
+{% if not review and is_latest %}
+<div class="confirm-box">
+  <h2 style="margin-top:0">核对确认</h2>
+  <p class="meta">
+    提交后将记录：公告 {{ number }}、
+    {% if diff.is_first %}首个版本 r{{ diff.new_revision }}（无前一版）
+    {% else %}版本对 r{{ diff.old_revision }} → r{{ diff.new_revision }}{% endif %}
+    及上述实际差异（含差异指纹 {{ diff.fingerprint[:16] }}… 与两版正文/附件指纹）。
+    若提交前又采入更新版本，本次确认将被拒绝，最新版保持待核。
+  </p>
+  <form method="post" action="/notice/{{ number|urlencode }}/review" class="inline-form">
+    <input type="hidden" name="old_revision" value="{{ diff.old_revision if diff.old_revision is not none else '' }}">
+    <input type="hidden" name="new_revision" value="{{ diff.new_revision }}">
+    <input type="hidden" name="fingerprint" value="{{ diff.fingerprint }}">
+    <label for="reviewer" style="margin:0">核对人</label>
+    <input id="reviewer" class="reviewer" type="text" name="reviewer"
+           maxlength="100" placeholder="留空则记为“档案员”">
+    <button type="submit">我已核对上述差异，确认</button>
+  </form>
+</div>
+{% endif %}
+{% endblock %}

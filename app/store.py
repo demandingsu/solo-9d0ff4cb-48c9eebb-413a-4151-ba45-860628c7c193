@@ -15,6 +15,9 @@ from typing import Iterable
 
 from .domain import (
     ArchiveStorageError,
+    ReviewAlreadyConfirmedError,
+    ReviewMismatchError,
+    StaleReviewError,
     VersionRecord,
     utc_now_iso,
 )
@@ -63,6 +66,26 @@ CREATE TABLE IF NOT EXISTS capture_log (
     detail          TEXT NOT NULL,
     created_at      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS review_confirmations (
+    id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+    announcement_number     TEXT NOT NULL
+                            REFERENCES announcements(number),
+    old_revision            INTEGER,
+    new_revision            INTEGER NOT NULL,
+    reviewer                TEXT NOT NULL,
+    diff_snapshot           TEXT NOT NULL,
+    diff_fingerprint        TEXT NOT NULL,
+    body_sha256_old         TEXT,
+    body_sha256_new         TEXT NOT NULL,
+    attachment_sha256_old   TEXT,
+    attachment_sha256_new   TEXT NOT NULL,
+    confirmed_at            TEXT NOT NULL,
+    UNIQUE (announcement_number, new_revision)
+);
+
+CREATE INDEX IF NOT EXISTS review_confirmations_number
+    ON review_confirmations (announcement_number, id DESC);
 """
 
 
@@ -171,7 +194,12 @@ class ArchiveStore:
                            SELECT v3.title FROM versions v3
                            WHERE v3.announcement_number = a.number
                            ORDER BY v3.revision DESC LIMIT 1
-                       ) AS latest_title
+                       ) AS latest_title,
+                       (
+                           SELECT rc.new_revision FROM review_confirmations rc
+                           WHERE rc.announcement_number = a.number
+                           ORDER BY rc.new_revision DESC LIMIT 1
+                       ) AS reviewed_revision
                 FROM announcements a
                 LEFT JOIN versions v ON v.announcement_number = a.number
                 GROUP BY a.number
@@ -408,6 +436,198 @@ class ArchiveStore:
             raise ArchiveStorageError(f"无法记录采集事件：{exc}") from exc
         finally:
             conn.close()
+
+    # ------------------------------------------------------- review writes
+
+    def save_review_confirmation(
+        self,
+        *,
+        number: str,
+        old_revision: int | None,
+        new_revision: int,
+        reviewer: str,
+        diff_snapshot: str,
+        diff_fingerprint: str,
+        body_sha256_old: str | None,
+        body_sha256_new: str,
+        attachment_sha256_old: str | None,
+        attachment_sha256_new: str,
+        confirmed_at: str,
+    ) -> None:
+        """Persist a review confirmation atomically.
+
+        The write is conditional: the revisions, their current body/attachment
+        fingerprints and the diff fingerprint must all match what the archivist
+        actually saw, and the confirmed revision must still be the latest one.
+        A newer capture makes the confirmation stale and the write is refused;
+        any storage failure rolls back without touching the pending state.
+        """
+        conn = self._connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+
+            if not self._announcement_row(conn, number):
+                raise ArchiveStorageError("确认失败：目标公告不存在，未写入任何核对记录。")
+
+            current = conn.execute(
+                "SELECT * FROM versions WHERE announcement_number = ? "
+                "ORDER BY revision DESC LIMIT 1",
+                (number,),
+            ).fetchone()
+            if current is None:
+                raise ArchiveStorageError("确认失败：档案中没有任何版本，未写入核对记录。")
+            if current["revision"] != new_revision:
+                raise StaleReviewError(
+                    f"确认已过期：提交针对 r{new_revision}，但档案最新版本已是 "
+                    f"r{current['revision']}。本次确认未写入，r{current['revision']} "
+                    "保持待核；此前的核对记录仍可查阅。"
+                )
+            if current["body_sha256"] != body_sha256_new:
+                raise ReviewMismatchError(
+                    "确认被拒：r{} 的正文指纹与提交时不一致，未写入核对记录。".format(
+                        new_revision
+                    )
+                )
+            if current["attachment_sha256"] != attachment_sha256_new:
+                raise ReviewMismatchError(
+                    "确认被拒：r{} 的附件指纹与提交时不一致，未写入核对记录。".format(
+                        new_revision
+                    )
+                )
+
+            if old_revision is not None:
+                previous = conn.execute(
+                    "SELECT * FROM versions WHERE announcement_number = ? "
+                    "AND revision = ?",
+                    (number, old_revision),
+                ).fetchone()
+                if previous is None:
+                    raise ReviewMismatchError(
+                        f"确认被拒：前一存档版 r{old_revision} 不存在，"
+                        "未写入核对记录。"
+                    )
+                if previous["body_sha256"] != body_sha256_old:
+                    raise ReviewMismatchError(
+                        f"确认被拒：r{old_revision} 的正文指纹与提交时不一致，"
+                        "未写入核对记录。"
+                    )
+                if previous["attachment_sha256"] != attachment_sha256_old:
+                    raise ReviewMismatchError(
+                        f"确认被拒：r{old_revision} 的附件指纹与提交时不一致，"
+                        "未写入核对记录。"
+                    )
+            elif body_sha256_old is not None or attachment_sha256_old is not None:
+                raise ReviewMismatchError(
+                    "确认被拒：首个版本不应携带前一版指纹，未写入核对记录。"
+                )
+
+            duplicate = conn.execute(
+                "SELECT 1 FROM review_confirmations "
+                "WHERE announcement_number = ? AND new_revision = ?",
+                (number, new_revision),
+            ).fetchone()
+            if duplicate:
+                raise ReviewAlreadyConfirmedError(
+                    f"r{new_revision} 已有核对确认记录，无需重复提交；"
+                    "最新版若有更新会重新进入待核。"
+                )
+
+            conn.execute(
+                """
+                INSERT INTO review_confirmations (
+                    announcement_number, old_revision, new_revision, reviewer,
+                    diff_snapshot, diff_fingerprint, body_sha256_old,
+                    body_sha256_new, attachment_sha256_old,
+                    attachment_sha256_new, confirmed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    number,
+                    old_revision,
+                    new_revision,
+                    reviewer,
+                    diff_snapshot,
+                    diff_fingerprint,
+                    body_sha256_old,
+                    body_sha256_new,
+                    attachment_sha256_old,
+                    attachment_sha256_new,
+                    confirmed_at,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO capture_log
+                    (announcement_number, outcome, revision, detail, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    number,
+                    "review_confirmed",
+                    new_revision,
+                    (
+                        f"核对确认：r{old_revision} → r{new_revision}"
+                        if old_revision is not None
+                        else f"核对确认：首个存档版 r{new_revision}（无前一版可比对）"
+                    )
+                    + f"，核对人 {reviewer}，差异指纹 {diff_fingerprint[:16]}…",
+                    confirmed_at,
+                ),
+            )
+            conn.execute("COMMIT")
+        except sqlite3.Error as exc:
+            try:
+                conn.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise ArchiveStorageError(f"核对确认写入失败，待核状态未改变：{exc}") from exc
+        finally:
+            conn.close()
+
+    # -------------------------------------------------------- review reads
+
+    def get_review(self, number: str, new_revision: int) -> dict | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM review_confirmations "
+                "WHERE announcement_number = ? AND new_revision = ?",
+                (number, new_revision),
+            ).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
+    def list_reviews(self, number: str) -> list[dict]:
+        conn = self._connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM review_confirmations WHERE announcement_number = ? "
+                "ORDER BY id DESC",
+                (number,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(r) for r in rows]
+
+    def latest_review(self, number: str) -> dict | None:
+        conn = self._connect()
+        try:
+            row = conn.execute(
+                "SELECT * FROM review_confirmations WHERE announcement_number = ? "
+                "ORDER BY new_revision DESC, id DESC LIMIT 1",
+                (number,),
+            ).fetchone()
+        finally:
+            conn.close()
+        return dict(row) if row else None
+
+    @staticmethod
+    def _announcement_row(conn: sqlite3.Connection, number: str) -> sqlite3.Row | None:
+        return conn.execute(
+            "SELECT 1 FROM announcements WHERE number = ?", (number,)
+        ).fetchone()
+
 
     @staticmethod
     def _row_to_record(row: sqlite3.Row) -> VersionRecord:

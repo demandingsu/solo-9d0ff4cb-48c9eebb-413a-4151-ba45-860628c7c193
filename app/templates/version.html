@@ -6,6 +6,7 @@
 <p class="meta">
   采集于 {{ record.captured_at|ts }} ·
   {% if record.source_retracted %}采集时源站处于撤稿状态{% else %}采集时源站在发{% endif %}
+  · <a href="/notice/{{ record.announcement_number|urlencode }}/version/{{ record.revision }}/diff">查看本版差异核对</a>
 </p>
 
 <div class="card">

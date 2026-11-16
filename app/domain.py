@@ -55,6 +55,22 @@ class ArchiveStorageError(ArchiveError):
     pass
 
 
+class ReviewError(ArchiveError):
+    """Base class for review-confirmation rejections."""
+
+
+class StaleReviewError(ReviewError):
+    """A newer revision was archived while the review form was open."""
+
+
+class ReviewMismatchError(ReviewError):
+    """The submitted review no longer matches the stored revisions/diff."""
+
+
+class ReviewAlreadyConfirmedError(ReviewError):
+    """This revision already has a recorded confirmation."""
+
+
 def normalize_number(value: str) -> str:
     number = (value or "").strip()
     if not number or not NUMBER_RE.fullmatch(number):
